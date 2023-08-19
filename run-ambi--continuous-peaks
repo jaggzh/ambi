@@ -1,0 +1,2 @@
+echo './ambi -q -c -s .1 -p'
+./ambi -q -c -s .1 -p
