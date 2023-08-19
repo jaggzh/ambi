@@ -6,6 +6,40 @@
 
 #define BUFSIZE 1024
 
+int continuous = 0;
+
+void usage() {
+	printf("Usage: ambi [options]\n"
+	       "\n"
+	       "Listen to default audio input and calculate avg and/or peak amplitudes.\n"
+	       "\n"
+	       "Options:\n"
+	       "  -s #.# (--secs)  Seconds of audio to process at a time\n"
+	       "  -v (--verbose)   Increase verbosity \n"
+	       "  -c (--cont)      Continuous mode (keeps listening and outputting)\n"
+	       "                   (If you request -r/--rc and -c together, sending\n"
+	       "                   SIGUSR1 (kill -USR1 {pid}) will cause us to exit\n"
+	       "                   with the return value. See -r below.)\n"
+	       " Two types of processing for now (both may be specified):\n"
+	       "  -a (--avg)       Output average amplitude\n"
+	       "  -p (--peak)      Output peak amplitude (default)\n"
+	       " Number format choices:\n"
+	       "  -%% (--perc)     Output percentages (##.##%%) instead of raw integer values\n"
+	       /* "  -2 (--8)         Output as range 0-255 (8 bit)\n" */
+	       " Can return the reading as an error code too:\n"
+	       "  -r (--rc)        Return code mode: Returns the last evaluated value as\n"
+	       "                   the programs return/error code.\n"
+	       "                   This returns 0-255 even if -%% is selected for visual,\n"
+	       "                   Also, it outputs either avg or peak (-a or -p). If\n"
+	       "                   you request both it will only output peak.\n"
+	       "  -h (--help)      Me!\n"
+	);
+}
+
+void handle_sigusr1(int sig) { // User requested we exit with value as rc
+    continuous=0;
+}
+
 int main(int argc, char* argv[]) {
 	pa_simple *s = NULL;
 	pa_sample_spec ss;
@@ -19,32 +53,48 @@ int main(int argc, char* argv[]) {
 	int avg_flag = 0;
 	int peak_flag = 0;
 	int percent_flag = 0;
-	int continuous = 0;
-	int quiet = 0;
+	/* int bit8_flag = 0; */ // This was intended for rc value of 0-100 instead of -255
+	int returncode_flag = 0;
+	int rc_type_peak = 1;
+	int rc=0;
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--secs") == 0) {
 			if (i+1 < argc) {
 				seconds = atof(argv[++i]);
 			}
-		} else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+		} else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
 			verbose = 1;
-		} else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--avg") == 0) {
+		} else if (!strcmp(argv[i], "-a") || !strcmp(argv[i], "--avg")) {
 			avg_flag = 1;
-		} else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--peak") == 0) {
+			rc_type_peak = 0;
+		} else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--peak")) {
 			peak_flag = 1;
-		} else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--cont") == 0) {
+			rc_type_peak = 1;
+		} else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--cont")) {
 			continuous = 1;
-		} else if (strcmp(argv[i], "-q") == 0) {
-			quiet = 1;
-		} else if (strcmp(argv[i], "-%") == 0) {
+		} else if (!strcmp(argv[i], "-%")) {
 			percent_flag = 1;
+		} else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--rc")) {
+			returncode_flag = 1;
+		/* } else if (!strcmp(argv[i], "-2") || !strcmp(argv[i], "-8")) { */
+		/* 	bit8_flag = 1; */
+		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+			usage();
+			exit(0);
 		}
 	}
-	if (!avg_flag && !peak_flag) {
-		avg_flag = peak_flag = 1;
-		if (!quiet) {
-			fprintf(stderr, "Defaulting to output peak and avg (-p -a).\n");
+	if (returncode_flag) {
+		signal(SIGUSR1, handle_sigusr1);
+	}
+
+	if (avg_flag && peak_flag) {
+		rc_type_peak = 1;
+	} else if (!avg_flag && !peak_flag) {
+		peak_flag = 1;
+		rc_type_peak = 1;
+		if (verbose) {
+			fprintf(stderr, "Defaulting to peak output.\n");
 		}
 	}
 
@@ -61,7 +111,7 @@ int main(int argc, char* argv[]) {
 		double peak = 0;
 		int total_samples = 0;
 
-		if (!quiet) {
+		if (verbose) {
 			fprintf(stderr, "Listening for %.3f seconds...\n", seconds);
 		}
 
@@ -87,23 +137,43 @@ int main(int argc, char* argv[]) {
 			printf("Amplitude Range: [0, %d]\n", 32767);
 		}
 
-		if (avg_flag) {
+		if (avg_flag && peak_flag) {
 			if (verbose)
-				printf("Average Amplitude: ");
+				printf("avg peak: ");
 			if (percent_flag)
-				printf("%.1f%%\n", (avg / max_value) * 100.0);
+				printf("%.2f%% %.2f%%\n",
+					(avg / max_value) * 100.0,
+					(peak / max_value) * 100.0);
 			else
-				printf("%.1f\n", avg);
+				printf("%d %d\n",
+					(int)avg,
+					(int)peak);
+		} else {
+			if (avg_flag) {
+				if (verbose)
+					printf("Average Amplitude: ");
+				if (percent_flag)
+					printf("%.2f%%\n", (avg / max_value) * 100.0);
+				else
+					printf("%d\n", (int)avg);
+			}
+
+			if (peak_flag) {
+				if (verbose)
+					printf("Peak Amplitude: ");
+				if (percent_flag) {
+					printf("%.2f%%\n", (peak / max_value) * 100.0);
+				} else {
+					printf("%d\n", (int)peak);
+				}
+			}
 		}
 
-		if (peak_flag) {
-			if (verbose)
-				printf("Peak Amplitude: ");
-			if (percent_flag) {
-				printf("%.1f%%\n", (peak / max_value) * 100.0);
-			} else {
-				printf("%.1f\n", peak);
-			}
+		if (returncode_flag) { // doing redundant math for now
+			if (rc_type_peak)
+				rc=(peak / max_value) * 255;
+			else
+				rc=(avg / max_value) * 255;
 		}
 	} while (continuous);
 
@@ -112,5 +182,8 @@ finish:
 		pa_simple_free(s);
 	}
 
+	if (returncode_flag) {
+		exit(rc);
+	}
 	return 0;
 }
